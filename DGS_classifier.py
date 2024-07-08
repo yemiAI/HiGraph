@@ -10,10 +10,13 @@ from sklearn.metrics import confusion_matrix, classification_report
 from imblearn.over_sampling import RandomOverSampler
 from torchvision import transforms
 import random
-
+from collections import defaultdict
 from utils.opt import Options
 from bvh import Bvh
-from annotations_dat import annotation_dictionary as ad
+
+# from annotations_dat import annotation_dictionary as ad
+from annontations_jesse_leader import annotation_dictionary as ad
+
 
 def set_seed(seed):
     random.seed(seed)
@@ -25,6 +28,7 @@ def set_seed(seed):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
+
 class BvhDatasets(Dataset):
     def __init__(self, opt, transform=None):
         self.history_size = opt.history_size
@@ -34,7 +38,7 @@ class BvhDatasets(Dataset):
 
         self.steps = ["SR", "SL", "BR", "BL", "CR", "CL", "FR", "FL"]
         for k in ad:
-            with open(os.path.join('bvh_follower_jesse', k)) as f:
+            with open(os.path.join('correct_annotation_jesse_leader', k)) as f:
                 mocap = Bvh(f.read())
                 self.animation_data[k] = torch.tensor([[[mocap.frame_joint_channel(frame, j, c) for c in
                                                          ['Zrotation', 'Xrotation', 'Yrotation']] for j in
@@ -50,6 +54,8 @@ class BvhDatasets(Dataset):
         animation_dict = self.animation_data[filename][fs]
 
         image_data = animation_dict.view(animation_dict.size(0), -1).float()
+        print(image_data.shape)
+        # exit(0)
 
         if self.transform:
             image_data = self.transform(image_data.unsqueeze(0)).squeeze(0)
@@ -60,6 +66,7 @@ class BvhDatasets(Dataset):
 
     def __len__(self):
         return len(self.answers)
+
 
 class EnhancedCRNN(nn.Module):
     def __init__(self, input_height, input_width, num_classes):
@@ -87,16 +94,71 @@ class EnhancedCRNN(nn.Module):
         x = self.fc2(x)
         return x
 
+
 def apply_random_oversampling(data, labels):
     ros = RandomOverSampler(random_state=42)
     data_res, labels_res = ros.fit_resample(data, labels)
     return data_res, labels_res
 
+
+class StateMachine:
+    def __init__(self, model, steps):
+        self.state = None  # No initial state
+        self.model = model
+        self.steps = steps
+        self.prev_state = None
+        self.state_log = []  # To log state transitions
+        self.transition_log = []  # To log transition actions
+        self.transition_counts = defaultdict(lambda: defaultdict(int))  # To count transitions
+
+    def predict_step(self, input_data):
+        with torch.no_grad():
+            output = self.model(input_data)
+            _, predicted = torch.max(output, 1)
+            return [self.steps[pred.item()] for pred in predicted]
+
+    def enter_state(self):
+        if self.state:
+            print(f"Entering state: {self.state}")
+
+    def exit_state(self):
+        if self.prev_state:
+            print(f"Exiting state: {self.prev_state}")
+
+    def transition(self, input_data):
+        predicted_steps = self.predict_step(input_data)
+        for step in predicted_steps:
+            if step in self.steps:
+                if self.state != step:
+                    self.prev_state = self.state
+                    self.exit_state()
+                    self.transition_log.append(('exit', self.state))
+                    self.state = step
+                    self.enter_state()
+                    self.transition_log.append(('enter', self.state))
+                    self.transition_counts[self.prev_state][self.state] += 1
+                self.perform_action()
+                self.transition_log.append(('action', self.state))
+            else:
+                print("Unknown step prediction:", step)
+
+    def perform_action(self):
+        if self.state:
+            print(f"Performing action for {self.state}")
+
+def print_state_transition_probabilities(steps, transition_counts):
+    print("State Transition Probabilities:")
+    for from_step, to_steps in transition_counts.items():
+        total_transitions = sum(to_steps.values())
+        for to_step, count in to_steps.items():
+            probability = count / total_transitions
+            print(f"From {from_step} to {to_step}: {probability:.2f}")
+
 def main():
     set_seed(42)  # Set seed for reproducibility
     option = Options().parse()
     transform = transforms.Compose([
-        transforms.RandomApply([transforms.Lambda(lambda x: x + 5 * torch.randn_like(x))], p=5),
+        transforms.RandomApply([transforms.Lambda(lambda x: x + 5 * torch.randn_like(x))], p=0.5),
     ])
     dataset = BvhDatasets(option, transform=transform)
 
@@ -193,7 +255,8 @@ def main():
         val_loss /= len(val_loader)
         val_accuracy = 100 * correct / total
 
-        print(f'Epoch {epoch + 1}, Training Loss: {train_loss:.4f}, Validation Loss: {val_loss:.4f}, Validation Accuracy: {val_accuracy:.2f}%')
+        print(
+            f'Epoch {epoch + 1}, Training Loss: {train_loss:.4f}, Validation Loss: {val_loss:.4f}, Validation Accuracy: {val_accuracy:.2f}%')
 
         scheduler.step(val_loss)
 
@@ -224,7 +287,8 @@ def main():
             # Save probabilities and predictions for each sample
             probabilities = F.softmax(outputs, dim=1).cpu().numpy()
             for j in range(inputs.size(0)):
-                sample_result = [i * inputs.size(0) + j + 1, class_names[labels[j]], class_names[predicted[j]]] + list(probabilities[j] * 100)
+                sample_result = [i * inputs.size(0) + j + 1, class_names[labels[j]], class_names[predicted[j]]] + list(
+                    probabilities[j] * 100)
                 sample_results.append(sample_result)
 
     test_loss /= len(test_loader)
@@ -242,7 +306,8 @@ def main():
     class_names = ["SR", "SL", "BR", "BL", "CR", "CL", "FR", "FL"]
     labels = list(range(len(class_names)))
     conf_matrix = confusion_matrix(all_labels, all_preds, labels=labels)
-    class_report = classification_report(all_labels, all_preds, target_names=class_names, labels=labels, zero_division=0)
+    class_report = classification_report(all_labels, all_preds, target_names=class_names, labels=labels,
+                                         zero_division=0)
 
     print("Confusion Matrix:")
     print(conf_matrix)
@@ -278,6 +343,18 @@ def main():
         writer = csv.writer(file)
         writer.writerow(samples_header)
         writer.writerows(sample_results)
+
+    # Integrate state machine
+    sm = StateMachine(model, class_names)  # No need to exclude initial
+
+    # Real-time simulation: process each sample individually
+    for inputs, _ in test_loader:
+        for input_data in inputs:
+            input_data = input_data.unsqueeze(0).unsqueeze(0)
+            sm.transition(input_data)
+
+    # Print state transitions
+    print_state_transition_probabilities(sm.steps, sm.transition_counts)
 
 if __name__ == '__main__':
     main()
