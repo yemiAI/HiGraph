@@ -27,6 +27,7 @@ class Options:
         #                     Running options
 
         self.parser.add_argument('--history_size', type=int, default=10, help='past frame number')
+        self.parser.add_argument('--progress_weight', type=float, default=1.0, help='progress weight')
         # ===============================================================
 
 

@@ -10,13 +10,12 @@ from sklearn.metrics import confusion_matrix, classification_report
 from imblearn.over_sampling import RandomOverSampler
 from torchvision import transforms
 import random
-from collections import defaultdict
+
 from utils.opt import Options
 from bvh import Bvh
 
-# from annotations_dat import annotation_dictionary as ad
-from annontations_jesse_leader import annotation_dictionary as ad
-
+from annotations_dat import annotation_dictionary as ad
+# from annontations_jesse_leader import annotation_dictionary as ad
 
 def set_seed(seed):
     random.seed(seed)
@@ -27,7 +26,6 @@ def set_seed(seed):
         torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-
 
 class BvhDatasets(Dataset):
     def __init__(self, opt, transform=None):
@@ -45,16 +43,23 @@ class BvhDatasets(Dataset):
                                                         mocap.get_joints_names()] for frame in range(mocap.nframes)])
 
             for e in ad[k]:
-                for start_f in range(e[1][0], e[1][1], self.history_size)[:-1]:
-                    self.answers.append([k, start_f, e[0]])
+                # for start_f in range(e[1][0], e[1][1], self.history_size)[:-1]:
+                for start_f in range(e[1][0], e[1][1] - self.history_size):
+                    progression = (self.history_size + start_f - e[1][0]) / (e[1][1] - e[1][0])  ###
+
+                    self.answers.append([k, start_f, e[0], progression])
 
     def __getitem__(self, item):
-        filename, start_frame, anno = self.answers[item]
+        filename, start_frame, anno, progression = self.answers[item]
         fs = range(start_frame, start_frame + self.history_size)
+        # print(fs)
+        # print(item)
+        # print(filename)
+        # print(self.animation_data[filename].shape)
         animation_dict = self.animation_data[filename][fs]
 
         image_data = animation_dict.view(animation_dict.size(0), -1).float()
-        print(image_data.shape)
+        # print(image_data.shape)
         # exit(0)
 
         if self.transform:
@@ -62,14 +67,14 @@ class BvhDatasets(Dataset):
 
         label = self.steps.index(anno)
 
-        return image_data, torch.tensor(label, dtype=torch.long)
+        return image_data, torch.tensor(label, dtype=torch.long), torch.tensor(progression, dtype=torch.double)
 
     def __len__(self):
         return len(self.answers)
 
 
 class EnhancedCRNN(nn.Module):
-    def __init__(self, input_height, input_width, num_classes):
+    def __init__(self, input_height, input_width, num_classes, model_prediction=0):
         super(EnhancedCRNN, self).__init__()
         self.conv1 = nn.Conv2d(1, 64, kernel_size=3, stride=1, padding=1)
         self.bn1 = nn.BatchNorm2d(64)
@@ -80,7 +85,7 @@ class EnhancedCRNN(nn.Module):
 
         self.gru = nn.GRU(input_size=128, hidden_size=256, num_layers=3, batch_first=True, dropout=0.5)
         self.fc1 = nn.Linear(256, 512)
-        self.fc2 = nn.Linear(512, num_classes)
+        self.fc2 = nn.Linear(512, num_classes + model_prediction)
 
     def forward(self, x):
         x = self.pool(F.relu(self.bn1(self.conv1(x))))
@@ -95,70 +100,24 @@ class EnhancedCRNN(nn.Module):
         return x
 
 
-def apply_random_oversampling(data, labels):
+def apply_random_oversampling(data, labels, progress):
     ros = RandomOverSampler(random_state=42)
     data_res, labels_res = ros.fit_resample(data, labels)
-    return data_res, labels_res
 
+    # Get the indices of the resampled data
+    indices = ros.sample_indices_
 
-class StateMachine:
-    def __init__(self, model, steps):
-        self.state = None  # No initial state
-        self.model = model
-        self.steps = steps
-        self.prev_state = None
-        self.state_log = []  # To log state transitions
-        self.transition_log = []  # To log transition actions
-        self.transition_counts = defaultdict(lambda: defaultdict(int))  # To count transitions
+    # Use the indices to resample the progress values
+    progress_res = progress[indices]
 
-    def predict_step(self, input_data):
-        with torch.no_grad():
-            output = self.model(input_data)
-            _, predicted = torch.max(output, 1)
-            return [self.steps[pred.item()] for pred in predicted]
+    return data_res, labels_res, progress_res
 
-    def enter_state(self):
-        if self.state:
-            print(f"Entering state: {self.state}")
-
-    def exit_state(self):
-        if self.prev_state:
-            print(f"Exiting state: {self.prev_state}")
-
-    def transition(self, input_data):
-        predicted_steps = self.predict_step(input_data)
-        for step in predicted_steps:
-            if step in self.steps:
-                if self.state != step:
-                    self.prev_state = self.state
-                    self.exit_state()
-                    self.transition_log.append(('exit', self.state))
-                    self.state = step
-                    self.enter_state()
-                    self.transition_log.append(('enter', self.state))
-                    self.transition_counts[self.prev_state][self.state] += 1
-                self.perform_action()
-                self.transition_log.append(('action', self.state))
-            else:
-                print("Unknown step prediction:", step)
-
-    def perform_action(self):
-        if self.state:
-            print(f"Performing action for {self.state}")
-
-def print_state_transition_probabilities(steps, transition_counts):
-    print("State Transition Probabilities:")
-    for from_step, to_steps in transition_counts.items():
-        total_transitions = sum(to_steps.values())
-        for to_step, count in to_steps.items():
-            probability = count / total_transitions
-            print(f"From {from_step} to {to_step}: {probability:.2f}")
 
 def main():
     set_seed(42)  # Set seed for reproducibility
     option = Options().parse()
     transform = transforms.Compose([
-        transforms.RandomApply([transforms.Lambda(lambda x: x + 5 * torch.randn_like(x))], p=0.5),
+        transforms.RandomApply([transforms.Lambda(lambda x: x + 5 * torch.randn_like(x))], p=5),
     ])
     dataset = BvhDatasets(option, transform=transform)
 
@@ -167,7 +126,7 @@ def main():
 
     # Count samples before oversampling
     class_counts_before = {step: 0 for step in dataset.steps}
-    for _, label in dataset:
+    for _, label, _ in dataset:
         class_counts_before[dataset.steps[label.item()]] += 1
 
     print("Class distribution before oversampling:")
@@ -175,17 +134,21 @@ def main():
         print(f"{step}: {count}")
 
     data = []
+    progress = []
     labels = []
     for i in range(len(dataset)):
-        img, label = dataset[i]
+        img, label, progression = dataset[i]
         data.append(img.numpy().flatten())
         labels.append(label.numpy())
+        progress.append(progression.numpy())
     data = np.array(data)
     labels = np.array(labels)
+    progress = np.array(progress)
 
-    data_res, labels_res = apply_random_oversampling(data, labels)
+    data_res, labels_res, progress_res = apply_random_oversampling(data, labels, progress)
     data_res = torch.tensor(data_res).view(-1, option.history_size, 54).float()
     labels_res = torch.tensor(labels_res).long()
+    progress_res = torch.tensor(progress_res)
 
     # Count samples after oversampling
     class_counts_after = {step: 0 for step in dataset.steps}
@@ -196,7 +159,7 @@ def main():
     for step, count in class_counts_after.items():
         print(f"{step}: {count}")
 
-    balanced_dataset = TensorDataset(data_res, labels_res)
+    balanced_dataset = TensorDataset(data_res, labels_res, progress_res)
 
     train_size = int(0.7 * len(balanced_dataset))
     val_size = int(0.15 * len(balanced_dataset))
@@ -213,7 +176,10 @@ def main():
 
     input_height = option.history_size
     input_width = 54
-    model = EnhancedCRNN(input_height, input_width, num_classes)
+
+    ## take a single animation chuck from test set , feed in history size from frame 0, 1, 2 all to the last frame and save the output of the model to the csv i.e prediction and propression
+
+    model = EnhancedCRNN(input_height, input_width, num_classes, model_prediction=1)
 
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-4)  # Increased initial learning rate
@@ -224,14 +190,21 @@ def main():
     val_loss_list = []
     val_accuracy_list = []
 
-    for epoch in range(200):  # Increased number of epochs
+    best_val_accuracy = 0.0
+
+    for epoch in range(100):  # Increased number of epochs
         model.train()
         running_loss = 0.0
-        for i, (inputs, labels) in enumerate(train_loader):
+        for i, (inputs, labels, progression) in enumerate(train_loader):
             inputs = inputs.unsqueeze(1)
             optimizer.zero_grad()
             outputs = model(inputs)
-            loss = criterion(outputs, labels)
+            classifier_loss = criterion(outputs[:, :-1], labels)
+            #print("GT progress: ", progression.float())
+            #print("GT pred:", outputs[:, -1])
+
+            progress_loss = torch.norm(outputs[:, -1] - progression.float())
+            loss = classifier_loss + option.progress_weight * progress_loss
             loss.backward()
             optimizer.step()
             running_loss += loss.item()
@@ -240,23 +213,32 @@ def main():
 
         model.eval()
         val_loss = 0.0
+        class_loss_total = 0.0
+        progress_loss_total = 0.0
+
         correct = 0
         total = 0
         with torch.no_grad():
-            for i, (inputs, labels) in enumerate(val_loader):
+            for i, (inputs, labels, progression) in enumerate(val_loader):
                 inputs = inputs.unsqueeze(1)
                 outputs = model(inputs)
-                loss = criterion(outputs, labels)
+                classifier_loss = criterion(outputs[:, :-1], labels)
+                progress_loss = torch.norm(outputs[:, -1] - progression.float())
+                loss = classifier_loss + option.progress_weight * progress_loss
+                class_loss_total += classifier_loss.item()
+                progress_loss_total += progress_loss.item()
                 val_loss += loss.item()
-                _, predicted = torch.max(outputs, 1)
+                _, predicted = torch.max(outputs[:, :-1], 1)
                 total += labels.size(0)
                 correct += (predicted == labels).sum().item()
 
         val_loss /= len(val_loader)
         val_accuracy = 100 * correct / total
 
-        print(
-            f'Epoch {epoch + 1}, Training Loss: {train_loss:.4f}, Validation Loss: {val_loss:.4f}, Validation Accuracy: {val_accuracy:.2f}%')
+        class_loss_total /= len(val_loader)
+        progress_loss_total /= len(val_loader)
+
+        print(f'Epoch {epoch + 1}, Training Loss: {train_loss:.4f}, Classifier Loss: {class_loss_total:.4f}, Progress Loss: {progress_loss_total:.4f}, Validation Loss: {val_loss:.4f}, Validation Accuracy: {val_accuracy:.2f}%')
 
         scheduler.step(val_loss)
 
@@ -265,6 +247,20 @@ def main():
         val_loss_list.append(val_loss)
         val_accuracy_list.append(val_accuracy)
 
+        # Save the model checkpoint if the validation accuracy is the best we've seen so far
+        if val_accuracy > best_val_accuracy:
+            best_val_accuracy = val_accuracy
+            checkpoint = {
+                'epoch': epoch + 1,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'train_loss': train_loss,
+                'val_loss': val_loss,
+                'val_accuracy': val_accuracy
+            }
+            torch.save(checkpoint, 'best_model_checkpoint.pth')
+
+    # Evaluate the model on the test set
     model.eval()
     test_loss = 0.0
     correct = 0
@@ -273,22 +269,23 @@ def main():
     all_labels = []
     sample_results = []
     with torch.no_grad():
-        for i, (inputs, labels) in enumerate(test_loader):
+        for i, (inputs, labels, progression) in enumerate(test_loader):
             inputs = inputs.unsqueeze(1)
             outputs = model(inputs)
-            loss = criterion(outputs, labels)
+
+            classifier_loss = criterion(outputs[:, :-1], labels)
+            progress_loss = torch.norm(outputs[:, -1] - progression.float())
+            loss = classifier_loss + option.progress_weight * progress_loss
             test_loss += loss.item()
-            _, predicted = torch.max(outputs, 1)
+            _, predicted = torch.max(outputs[:, :-1], 1)
             total += labels.size(0)
             correct += (predicted == labels).sum().item()
             all_preds.extend(predicted.cpu().numpy())
             all_labels.extend(labels.cpu().numpy())
 
-            # Save probabilities and predictions for each sample
-            probabilities = F.softmax(outputs, dim=1).cpu().numpy()
+            probabilities = F.softmax(outputs[:, :-1], dim=1).cpu().numpy()
             for j in range(inputs.size(0)):
-                sample_result = [i * inputs.size(0) + j + 1, class_names[labels[j]], class_names[predicted[j]]] + list(
-                    probabilities[j] * 100)
+                sample_result = [i * inputs.size(0) + j + 1, class_names[labels[j]], class_names[predicted[j]]] + list(probabilities[j] * 100)
                 sample_results.append(sample_result)
 
     test_loss /= len(test_loader)
@@ -306,8 +303,7 @@ def main():
     class_names = ["SR", "SL", "BR", "BL", "CR", "CL", "FR", "FL"]
     labels = list(range(len(class_names)))
     conf_matrix = confusion_matrix(all_labels, all_preds, labels=labels)
-    class_report = classification_report(all_labels, all_preds, target_names=class_names, labels=labels,
-                                         zero_division=0)
+    class_report = classification_report(all_labels, all_preds, target_names=class_names, labels=labels, zero_division=0)
 
     print("Confusion Matrix:")
     print(conf_matrix)
@@ -337,24 +333,44 @@ def main():
         percentage = (correct_pred_count / class_count) * 100 if class_count > 0 else 0
         print(f"Class {class_name}: {percentage:.2f}% of predictions match the ground truth.")
 
-    # Save detailed sample testing results
     samples_header = ["Sample", "GT", "Prediction"] + class_names
     with open('sample_testing_log.csv', 'w', newline='') as file:
         writer = csv.writer(file)
         writer.writerow(samples_header)
         writer.writerows(sample_results)
 
-    # Integrate state machine
-    sm = StateMachine(model, class_names)  # No need to exclude initial
+    # Select a single animation chunk from the test set
+    single_animation_chunk, _, _ = test_dataset[0]
 
-    # Real-time simulation: process each sample individually
-    for inputs, _ in test_loader:
-        for input_data in inputs:
-            input_data = input_data.unsqueeze(0).unsqueeze(0)
-            sm.transition(input_data)
 
-    # Print state transitions
-    print_state_transition_probabilities(sm.steps, sm.transition_counts)
+    # Prepare data for different starting frames
+    single_animation_results = []
+    for start_frame in range(0, single_animation_chunk.size(0) - option.history_size + 1):
+        input_chunk = single_animation_chunk[start_frame:start_frame + option.history_size].unsqueeze(0).unsqueeze(0)
+        with torch.no_grad():
+            output = model(input_chunk)
+        predicted_progression = torch.argmax(output[:, :-1], dim=1).item()
+        #print(predicted_progression)
+        progression_value = output[:, -1].item()
+        #print(progression_value)
+        #print(start_frame)
+        #exit(0)
+        single_animation_results.append([start_frame, predicted_progression, progression_value])
+
+    # Save the single animation results to a CSV file
+    with open('single_animation_results.csv', 'w', newline='') as file:
+        writer = csv.writer(file)
+        writer.writerow(['StartFrame', 'PredictedLabel', 'ProgressionValue'])
+        writer.writerows(single_animation_results)
+
+    print("Single animation results saved to 'single_animation_results.csv'")
+
+    # Exit the code
+
+    ## given file name and startt frame how can i get the data and the two annotations from it ?
+
+    #exit(0)
+
 
 if __name__ == '__main__':
     main()
