@@ -285,3 +285,28 @@ annotation_dictionary = {
 
 
 }
+
+
+defaulted_annotation_dictionary = {}
+
+def inserted_entry(start_frame, entry, default_anno = 'NA'):
+    if (entry[1][0] > start_frame):
+        new_entry = [default_anno, [start_frame, entry[1][0]]]
+        return new_entry
+    else:
+        return None
+
+
+for k in annotation_dictionary:
+    origlist = annotation_dictionary[k]
+    defaulted_annotation_dictionary[k] = []
+
+    start_frame = 0
+    for entry in origlist:
+        new_entries = inserted_entry(start_frame, entry)
+        if (new_entries is not None):
+            defaulted_annotation_dictionary[k].append(new_entries)
+        defaulted_annotation_dictionary[k].append(entry)
+        start_frame = entry[1][1]
+
+#print(defaulted_annotation_dictionary)

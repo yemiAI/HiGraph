@@ -15,7 +15,6 @@ from utils.opt import Options
 from bvh import Bvh
 
 from annotations_dat import annotation_dictionary as ad
-# from annontations_jesse_leader import annotation_dictionary as ad
 
 def set_seed(seed):
     random.seed(seed)
@@ -36,31 +35,26 @@ class BvhDatasets(Dataset):
 
         self.steps = ["SR", "SL", "BR", "BL", "CR", "CL", "FR", "FL"]
         for k in ad:
-            with open(os.path.join('correct_annotation_jesse_leader', k)) as f:
+            with open(os.path.join('jesse_data', k)) as f:
                 mocap = Bvh(f.read())
                 self.animation_data[k] = torch.tensor([[[mocap.frame_joint_channel(frame, j, c) for c in
                                                          ['Zrotation', 'Xrotation', 'Yrotation']] for j in
                                                         mocap.get_joints_names()] for frame in range(mocap.nframes)])
 
             for e in ad[k]:
-                # for start_f in range(e[1][0], e[1][1], self.history_size)[:-1]:
                 for start_f in range(e[1][0], e[1][1] - self.history_size):
-                    progression = (self.history_size + start_f - e[1][0]) / (e[1][1] - e[1][0])  ###
+                    progression = (start_f - e[1][0]) / (e[1][1] - e[1][0])
 
                     self.answers.append([k, start_f, e[0], progression])
+
+
 
     def __getitem__(self, item):
         filename, start_frame, anno, progression = self.answers[item]
         fs = range(start_frame, start_frame + self.history_size)
-        # print(fs)
-        # print(item)
-        # print(filename)
-        # print(self.animation_data[filename].shape)
         animation_dict = self.animation_data[filename][fs]
 
         image_data = animation_dict.view(animation_dict.size(0), -1).float()
-        # print(image_data.shape)
-        # exit(0)
 
         if self.transform:
             image_data = self.transform(image_data.unsqueeze(0)).squeeze(0)
@@ -170,19 +164,17 @@ def main():
     print(f"Validation dataset length: {len(val_dataset)}")
     print(f"Test dataset length: {len(test_dataset)}")
 
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
-    test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=option.batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=option.batch_size, shuffle=False)
+    test_loader = DataLoader(test_dataset, batch_size=option.batch_size, shuffle=False)
 
     input_height = option.history_size
     input_width = 54
 
-    ## take a single animation chuck from test set , feed in history size from frame 0, 1, 2 all to the last frame and save the output of the model to the csv i.e prediction and propression
-
     model = EnhancedCRNN(input_height, input_width, num_classes, model_prediction=1)
 
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-4)  # Increased initial learning rate
+    optimizer = optim.Adam(model.parameters(), lr=option.learning_rate, weight_decay=1e-4)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=5, verbose=True)
 
     epoch_list = []
@@ -192,7 +184,7 @@ def main():
 
     best_val_accuracy = 0.0
 
-    for epoch in range(100):  # Increased number of epochs
+    for epoch in range(option.num_epochs):
         model.train()
         running_loss = 0.0
         for i, (inputs, labels, progression) in enumerate(train_loader):
@@ -200,8 +192,6 @@ def main():
             optimizer.zero_grad()
             outputs = model(inputs)
             classifier_loss = criterion(outputs[:, :-1], labels)
-            #print("GT progress: ", progression.float())
-            #print("GT pred:", outputs[:, -1])
 
             progress_loss = torch.norm(outputs[:, -1] - progression.float())
             loss = classifier_loss + option.progress_weight * progress_loss
@@ -258,7 +248,7 @@ def main():
                 'val_loss': val_loss,
                 'val_accuracy': val_accuracy
             }
-            torch.save(checkpoint, 'best_model_checkpoint.pth')
+            torch.save(checkpoint, f'{option.checkpoint_name}.pth')
 
     # Evaluate the model on the test set
     model.eval()
@@ -342,7 +332,6 @@ def main():
     # Select a single animation chunk from the test set
     single_animation_chunk, _, _ = test_dataset[0]
 
-
     # Prepare data for different starting frames
     single_animation_results = []
     for start_frame in range(0, single_animation_chunk.size(0) - option.history_size + 1):
@@ -350,11 +339,7 @@ def main():
         with torch.no_grad():
             output = model(input_chunk)
         predicted_progression = torch.argmax(output[:, :-1], dim=1).item()
-        #print(predicted_progression)
         progression_value = output[:, -1].item()
-        #print(progression_value)
-        #print(start_frame)
-        #exit(0)
         single_animation_results.append([start_frame, predicted_progression, progression_value])
 
     # Save the single animation results to a CSV file
@@ -364,12 +349,6 @@ def main():
         writer.writerows(single_animation_results)
 
     print("Single animation results saved to 'single_animation_results.csv'")
-
-    # Exit the code
-
-    ## given file name and startt frame how can i get the data and the two annotations from it ?
-
-    #exit(0)
 
 
 if __name__ == '__main__':

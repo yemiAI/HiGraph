@@ -13,13 +13,18 @@ import torch.nn.functional as F
 
 
 class BvhDataset(Dataset):
-    def __init__(self, filename, history_size, transform=None):
+    def __init__(self, filename, history_size, transform=None, insert_transitions = False):
         self.history_size = history_size
         self.answers = []
         self.animation_data = {}
         self.transform = transform
+        self.insert_transitions = insert_transitions
+
 
         self.steps = ["SR", "SL", "BR", "BL", "CR", "CL", "FR", "FL"]
+
+        # if (insert_transitions):
+        #     self.steps.append('NA')
 
         # Load the specified file
         with open(filename) as f:
@@ -31,16 +36,23 @@ class BvhDataset(Dataset):
         # Process annotations
         basename = os.path.basename(filename)
         if basename in ad:
-            for e in ad[basename]:
+            for idx, e in enumerate(ad[basename]):
                 for start_f in range(e[1][0], e[1][1] - self.history_size):
-                    progression = (self.history_size + start_f - e[1][0]) / (e[1][1] - e[1][0])
+                    progression = (start_f - e[1][0]) / (e[1][1] - e[1][0])
+                    #progression = (start_f + self.history_size - e[1][0]) / (e[1][1] - e[1][0])
 
                     print("SF: %d, hz: %d, step_start: %d, step_end: %d, progression: %f"%
                           (start_f, self.history_size, e[1][0], e[1][1], progression))
 
                     self.answers.append([filename, start_f, e[0], progression])
-        else:
-            print(f"No annotations found for {basename}")
+        # else:
+        #     print(f"No annotations found for {basename}")
+                if (self.insert_transitions):
+                    if (idx < len(ad[basename]) - 1):
+                        for start_f in range(e[1][1] - self.history_size, e[1][1]):
+                            progression = (start_f - e[1][0]) / (e[1][1] - e[1][0])
+                            #progression = (start_f + self.history_size - e[1][0]) / (e[1][1] - e[1][0])
+                            self.answers.append([basename, start_f, 'NA', progression])
 
     def __getitem__(self, item):
         filename, start_frame, anno, progression = self.answers[item]
@@ -52,7 +64,10 @@ class BvhDataset(Dataset):
         if self.transform:
             image_data = self.transform(image_data.unsqueeze(0)).squeeze(0)
 
-        label = self.steps.index(anno)
+        if (anno == 'NA'):
+            label = -1
+        else:
+            label = self.steps.index(anno)
 
         return image_data, torch.tensor(label, dtype=torch.long), torch.tensor(progression, dtype=torch.double), start_frame, filename
 
@@ -86,10 +101,9 @@ class EnhancedCRNN(nn.Module):
         x = self.fc2(x)
         return x
 
-
 def single_test(opt):
     # Load the dataset
-    dataset = BvhDataset(opt.filename, opt.history_size)
+    dataset = BvhDataset(opt.filename, opt.history_size, insert_transitions=True)
     loader = DataLoader(dataset, batch_size=1, shuffle=False)
 
     # Initialize and load the model
@@ -110,21 +124,23 @@ def single_test(opt):
             inputs = inputs.unsqueeze(1)  # Add a channel dimension
             outputs = model(inputs)
 
-            predicted_label = torch.argmax(outputs[:, :-1], dim=1).item()
+            predicted_label_idx = torch.argmax(outputs[:, :-1], dim=1).item()
+            predicted_label = dataset.steps[predicted_label_idx] if predicted_label_idx != -1 else 'NA'
             progression_value = outputs[:, -1].item()
-            gt_label = labels.item()
+            gt_label_idx = labels.item()
+            gt_label = dataset.steps[gt_label_idx] if gt_label_idx != -1 else 'NA'
             gt_progression = progression.item()
-            results.append([start_frame.item(), predicted_label, progression_value, gt_label, gt_progression])
+            end_frame = start_frame.item() + opt.history_size
+            results.append([start_frame.item(), end_frame, predicted_label, progression_value, gt_label, gt_progression]) #, dataset.steps[gt_label_idx]
 
     # Save results to CSV
     result_filename = f"{os.path.splitext(os.path.basename(opt.filename))[0]}_results.csv"
     with open(result_filename, 'w', newline='') as file:
         writer = csv.writer(file)
-        writer.writerow(['StartFrame', 'PredictedLabel', 'PredictedProgression', 'GTLabel', 'GTProgression'])
+        writer.writerow(['StartFrame', 'EndFrame', 'PredictedLabel', 'PredictedProgression', 'GTLabel', 'GTProgression']) #'Step']
         writer.writerows(results)
 
     print(f"Results saved to {result_filename}")
-
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Process BVH file.')
