@@ -38,7 +38,7 @@ class BvhDataset(Dataset):
         if basename in ad:
             for idx, e in enumerate(ad[basename]):
                 for start_f in range(e[1][0], e[1][1] - self.history_size):
-                    progression = (start_f - e[1][0]) / (e[1][1] - e[1][0])
+                    progression = (self.history_size +start_f - e[1][0]) / (e[1][1] - e[1][0])
                     #progression = (start_f + self.history_size - e[1][0]) / (e[1][1] - e[1][0])
 
                     print("SF: %d, hz: %d, step_start: %d, step_end: %d, progression: %f"%
@@ -49,8 +49,9 @@ class BvhDataset(Dataset):
         #     print(f"No annotations found for {basename}")
                 if (self.insert_transitions):
                     if (idx < len(ad[basename]) - 1):
+                        enext = ad[basename][idx + 1]
                         for start_f in range(e[1][1] - self.history_size, e[1][1]):
-                            progression = (start_f - e[1][0]) / (e[1][1] - e[1][0])
+                            progression = (self.history_size +start_f - enext[1][0]) / (enext[1][1] - enext[1][0])
                             #progression = (start_f + self.history_size - e[1][0]) / (e[1][1] - e[1][0])
                             self.answers.append([basename, start_f, 'NA', progression])
 

@@ -43,7 +43,7 @@ class BvhDatasets(Dataset):
 
             for e in ad[k]:
                 for start_f in range(e[1][0], e[1][1] - self.history_size):
-                    progression = (start_f - e[1][0]) / (e[1][1] - e[1][0])
+                    progression = (self.history_size + start_f - e[1][0]) / (e[1][1] - e[1][0])
 
                     self.answers.append([k, start_f, e[0], progression])
 
