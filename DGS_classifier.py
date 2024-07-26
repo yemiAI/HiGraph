@@ -182,11 +182,16 @@ def main():
     val_loss_list = []
     val_accuracy_list = []
 
+    classifier_loss_list = []
+    progress_loss_list = []
+
     best_val_accuracy = 0.0
 
     for epoch in range(option.num_epochs):
         model.train()
         running_loss = 0.0
+        classifier_loss_total = 0.0
+        progress_loss_total = 0.0
         for i, (inputs, labels, progression) in enumerate(train_loader):
             inputs = inputs.unsqueeze(1)
             optimizer.zero_grad()
@@ -198,8 +203,12 @@ def main():
             loss.backward()
             optimizer.step()
             running_loss += loss.item()
+            classifier_loss_total += classifier_loss.item()
+            progress_loss_total += progress_loss.item()
 
         train_loss = running_loss / len(train_loader)
+        classifier_loss_avg = classifier_loss_total / len(train_loader)
+        progress_loss_avg = progress_loss_total / len(train_loader)
 
         model.eval()
         val_loss = 0.0
@@ -228,12 +237,14 @@ def main():
         class_loss_total /= len(val_loader)
         progress_loss_total /= len(val_loader)
 
-        print(f'Epoch {epoch + 1}, Training Loss: {train_loss:.4f}, Classifier Loss: {class_loss_total:.4f}, Progress Loss: {progress_loss_total:.4f}, Validation Loss: {val_loss:.4f}, Validation Accuracy: {val_accuracy:.2f}%')
+        print(f'Epoch {epoch + 1}, Training Loss: {train_loss:.4f}, Classifier Loss: {classifier_loss_avg:.4f}, Progress Loss: {progress_loss_avg:.4f}, Validation Loss: {val_loss:.4f}, Validation Accuracy: {val_accuracy:.2f}%')
 
         scheduler.step(val_loss)
 
         epoch_list.append(epoch + 1)
         train_loss_list.append(train_loss)
+        classifier_loss_list.append(classifier_loss_avg)
+        progress_loss_list.append(progress_loss_avg)
         val_loss_list.append(val_loss)
         val_accuracy_list.append(val_accuracy)
 
@@ -249,6 +260,11 @@ def main():
                 'val_accuracy': val_accuracy
             }
             torch.save(checkpoint, f'{option.checkpoint_name}.pth')
+
+    # Save the training logs to a CSV file
+    results = np.column_stack((epoch_list, train_loss_list, classifier_loss_list, progress_loss_list, val_loss_list, val_accuracy_list))
+    header = "Epoch,TrainingLoss,ClassifierLoss,ProgressionLoss,ValidationLoss,ValidationAccuracy"
+    np.savetxt('training_log.csv', results, delimiter=',', header=header, comments='', fmt='%f')
 
     # Evaluate the model on the test set
     model.eval()
@@ -281,10 +297,6 @@ def main():
     test_loss /= len(test_loader)
     test_accuracy = 100 * correct / total
     print(f"Test Loss: {test_loss}, Accuracy: {test_accuracy}%")
-
-    results = np.column_stack((epoch_list, train_loss_list, val_loss_list, val_accuracy_list))
-    header = "Epoch,TrainingLoss,ValidationLoss,ValidationAccuracy"
-    np.savetxt('training_log.csv', results, delimiter=',', header=header, comments='', fmt='%f')
 
     with open('training_log.csv', 'a', newline='') as file:
         writer = csv.writer(file)

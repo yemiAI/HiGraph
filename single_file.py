@@ -118,12 +118,16 @@ def single_test(opt):
     model.eval()
 
     results = []
-
+    import time
     with torch.no_grad():
         for data in loader:
             inputs, labels, progression, start_frame, filename = data
             inputs = inputs.unsqueeze(1)  # Add a channel dimension
+
+            start_time = time.time()
             outputs = model(inputs)
+            end_time = time.time()
+            print("Time difference is %f seconds"%(end_time - start_time))
 
             predicted_label_idx = torch.argmax(outputs[:, :-1], dim=1).item()
             predicted_label = dataset.steps[predicted_label_idx] if predicted_label_idx != -1 else 'NA'
